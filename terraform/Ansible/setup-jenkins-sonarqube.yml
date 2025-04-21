@@ -1,0 +1,187 @@
+---
+- name: Setup Jenkins and SonarQube
+  hosts: jenkins-sonarqube
+  become: yes
+
+  vars:
+    java_packages_2:
+        - openjdk-11-jdk
+    java_packages:
+      - openjdk-17-jdk
+
+  tasks:
+
+    - name: Install Java (required for both Jenkins & SonarQube)
+      apt:
+        name: "{{ java_packages_2 }}"
+        state: absent
+        update_cache: yes
+
+    - name: Install Java (required for both Jenkins & SonarQube)
+      apt:
+        name: "{{ java_packages }}"
+        state: present
+        update_cache: yes
+
+    - name: Remove old Jenkins key if it exists
+      file:
+        path: /etc/apt/trusted.gpg.d/jenkins.gpg
+        state: absent
+
+    # Jenkins install
+    - name: Ensure required dependencies are present
+      apt:
+        name: apt-transport-https
+        state: present
+        update_cache: yes
+
+    - name: Download Jenkins GPG key
+      get_url:
+        url: https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+        dest: /usr/share/keyrings/jenkins-keyring.asc
+        mode: '0644'
+
+    - name: Add Jenkins APT repository
+      copy:
+        dest: /etc/apt/sources.list.d/jenkins.list
+        content: |
+          deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/
+
+    - name: Update APT cache
+      apt:
+        update_cache: yes
+
+    - name: Install Jenkins
+      apt:
+        name: jenkins
+        state: present
+
+
+    - name: Enable and start Jenkins
+      systemd:
+        name: jenkins
+        enabled: yes
+        state: started
+
+    - name: Get Jenkins password
+      command: cat /var/lib/jenkins/secrets/initialAdminPassword
+      register: Jenkins_password
+
+    - name: print jenkins password
+      debug:
+        msg: "This playbook is running as: {{ Jenkins_password.stdout }}"
+
+    - name: Install required packages for Jenkins
+      apt:
+        name:
+          - apt-transport-https
+          - gnupg2
+        state: present
+
+    # - name: Download Jenkins GPG key
+    #   get_url:
+    #     url: https://pkg.
+
+    # SonarQube setup (lightweight version)
+    - name: Install required packages for SonarQube
+      apt:
+        name:
+          - unzip
+          - wget
+          - gnupg
+        state: present
+
+    - name: Create sonar user
+      user:
+        name: sonar
+        shell: /bin/bash
+        create_home: yes
+
+    - name: Download SonarQube
+      get_url:
+        url: https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-10.4.1.88267.zip
+        dest: /tmp/sonarqube.zip
+
+    - name: Unzip SonarQube
+      unarchive:
+        src: /tmp/sonarqube.zip
+        dest: /opt/
+        remote_src: yes
+
+    - name: Find extracted SonarQube directory
+      find:
+        paths: /opt
+        patterns: 'sonarqube-*'
+        file_type: directory
+      register: sonarqube_folder
+
+    - name: Rename and change permissions of /opt/sonarqube-* to /opt/sonarqube
+      file:
+        src: "{{ sonarqube_folder.files[0].path }}"
+        dest: /opt/sonarqube
+        state: link
+        force: yes
+
+    - name: Change ownership
+      file:
+        path: /opt/sonarqube
+        state: directory
+        owner: sonar
+        group: sonar
+        recurse: yes
+
+    - name: Create systemd service for SonarQube
+      copy:
+        dest: /etc/systemd/system/sonarqube.service
+        content: |
+          [Unit]
+          Description=SonarQube service
+          After=network.target
+
+          [Service]
+          Type=forking
+          ExecStart=/opt/sonarqube/bin/linux-x86-64/sonar.sh start
+          ExecStop=/opt/sonarqube/bin/linux-x86-64/sonar.sh stop
+          User=sonar
+          Group=sonar
+          Restart=always
+          LimitNOFILE=65536
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd and enable SonarQube
+      systemd:
+        daemon_reload: yes
+        name: sonarqube
+        enabled: yes
+        state: started
+
+    - name: Install docker engine
+      apt:
+        name: docker.io
+        state: present
+    
+    - name: start docker daemon
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+    
+    - name: Add ubuntu user to docker group
+      ansible.builtin.user:
+        name: ubuntu
+        groups: docker
+        append: yes
+
+    - name: Add jenkins user to docker group
+      ansible.builtin.user:
+        name: jenkins
+        groups: docker
+        append: yes
+
+    - name: restart docker daemon
+      systemd:
+        name: docker
+        state: restarted
+   
